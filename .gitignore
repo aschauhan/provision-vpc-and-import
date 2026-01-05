@@ -1,0 +1,49 @@
+# Ignore Terraform local directories and state
+/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+terraform.tfvars.json
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+
+# Ignore plan output and crash logs
+*.tfplan
+plan.out
+crash.log
+crash.*.log
+
+# Ignore provider plugins and binaries installed in .terraform
+**/.terraform/providers/**
+
+# Ignore editor and OS files
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Ignore SSH keys and certificates
+*.pem
+*.key
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Generated VPC import artifacts (kept ephemeral)
+env/*/*-import/**
+
+# Extra safety in case artifacts are moved elsewhere
+vpc_resources_*.json
+.state_list_*.txt
+.state_list_*.uniq.txt
+import_*.log
+
