@@ -60,6 +60,40 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
                 out.append(m.group(1))
         return out
 
+    def parse_rule_numbers(list_name: str) -> List[int]:
+        # Very small HCL-ish parser for:
+        # nacl_rules = {
+        #   <list_name> = [
+        #     { rule_number = 100 ... },
+        #   ]
+        # }
+        start_re = re.compile(rf"^\s*{re.escape(list_name)}\s*=\s*\[\s*$")
+        end_re = re.compile(r"^\s*\]\s*,?\s*$")
+        in_list = False
+        out: List[int] = []
+        for ln in lines:
+            if not in_list:
+                if start_re.match(ln):
+                    in_list = True
+                continue
+            if end_re.match(ln):
+                break
+            m = re.search(r"\brule_number\s*=\s*(\d+)", ln)
+            if m:
+                try:
+                    out.append(int(m.group(1)))
+                except Exception:
+                    pass
+        # de-dupe while preserving order
+        seen = set()
+        uniq: List[int] = []
+        for n in out:
+            if n in seen:
+                continue
+            seen.add(n)
+            uniq.append(n)
+        return uniq
+
     return {
         "environment": parse_string("environment"),
         "region": parse_string("region"),
@@ -70,7 +104,71 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
         "private_subnet_cidrs": parse_list("private_subnet_cidrs"),
         "nonroutable_subnet_cidrs": parse_list("nonroutable_subnet_cidrs"),
         "azs": parse_list("azs"),
+        # NACL rule numbers (only imports those that are declared in tfvars)
+        "nacl_public_ingress_rule_numbers": parse_rule_numbers("public_ingress"),
+        "nacl_public_egress_rule_numbers": parse_rule_numbers("public_egress"),
+        "nacl_private_ingress_rule_numbers": parse_rule_numbers("private_ingress"),
+        "nacl_private_egress_rule_numbers": parse_rule_numbers("private_egress"),
     }
+
+
+def _normalize_protocol(proto: Any) -> str:
+    # AWS may return protocol as str/int; terraform import id expects the raw protocol number string (e.g. "-1", "6").
+    if proto is None:
+        return "-1"
+    return str(proto).strip()
+
+
+def _emit_nacl_rule_imports(
+    lines: List[str],
+    tfv: Dict[str, Any],
+    module_prefix: str,
+    nacl_id: str,
+    nacl_rules: List[Dict[str, Any]],
+    ingress_resource: str,
+    egress_resource: str,
+    allowed_ingress_rule_numbers: List[int],
+    allowed_egress_rule_numbers: List[int],
+) -> None:
+    if not nacl_id:
+        return
+
+    ingress_set = set(allowed_ingress_rule_numbers or [])
+    egress_set = set(allowed_egress_rule_numbers or [])
+
+    for r in nacl_rules or []:
+        if (r.get("network_acl_id") or "") != nacl_id:
+            continue
+        rule_number = r.get("RuleNumber")
+        if rule_number is None:
+            continue
+        try:
+            rule_number_i = int(rule_number)
+        except Exception:
+            continue
+
+        # Skip the implicit AWS default deny rules.
+        if rule_number_i == 32767:
+            continue
+
+        egress = bool(r.get("Egress"))
+        if (not egress and rule_number_i not in ingress_set) or (egress and rule_number_i not in egress_set):
+            continue
+
+        protocol = _normalize_protocol(r.get("Protocol"))
+        import_id = f"{nacl_id}:{rule_number_i}:{protocol}:{str(egress).lower()}"
+        addr = (
+            f"{module_prefix}.aws_network_acl_rule.{egress_resource}[\"{rule_number_i}\"]"
+            if egress
+            else f"{module_prefix}.aws_network_acl_rule.{ingress_resource}[\"{rule_number_i}\"]"
+        )
+        _emit_import(
+            lines,
+            tfv.get("_tfvars_path", ""),
+            addr,
+            import_id,
+            f"NACL rule {rule_number_i} ({'egress' if egress else 'ingress'})",
+        )
 
 
 def _bash_quote_single(s: str) -> str:
@@ -117,6 +215,8 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         data = json.load(f)
 
     tfv = _parse_tfvars(tfvars_path)
+    # stash for helpers that call _emit_import
+    tfv["_tfvars_path"] = tfvars_path
     vpc_name = tfv.get("vpc_name") or _tag_value((data.get("vpc") or {}).get("tags") or [], "Name") or "vpc"
 
     public_cidrs = tfv.get("public_subnet_cidrs") or []
@@ -161,9 +261,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     public_nacl = _find_by_tag_name(nacls, public_nacl_name)
     prn_nacl = _find_by_tag_name(nacls, prn_nacl_name)
 
-    # NACL rule: nonroutable_10_rule is fixed in code
     prn_nacl_id = (prn_nacl or {}).get("id") or ""
-    nonroutable_10_import_id = f"{prn_nacl_id}:100:-1:false" if prn_nacl_id else ""
 
     # IGW
     igw_id = ((data.get("internet_gateway") or {}).get("id")) or ""
@@ -352,7 +450,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
 
     # Route tables
     if public_rt_id:
-        _emit_import(lines, tfvars_posix, "module.public_route_table.aws_route_table.this", public_rt_id, "public route table")
+        _emit_import(lines, tfvars_posix, "module.public_route_table[0].aws_route_table.this", public_rt_id, "public route table")
 
     for cidr in private_cidrs:
         rt_id = private_rt_by_cidr.get(cidr) or ""
@@ -374,7 +472,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
             if subnet_id:
                 # aws_route_table_association import id is subnet-id/route-table-id (NOT rtbassoc-*)
                 assoc_id = f"{subnet_id}/{public_rt_id}"
-            addr = f'module.public_route_table.aws_route_table_association.this["{idx}"]'
+            addr = f'module.public_route_table[0].aws_route_table_association.this["{idx}"]'
             _emit_import(lines, tfvars_posix, addr, assoc_id, f"public rtb association {cidr}")
 
     for cidr in private_cidrs:
@@ -399,7 +497,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
 
     # Routes (explicit resources in root)
     if public_rt_id:
-        _emit_import(lines, tfvars_posix, "aws_route.public_default", f"{public_rt_id}_0.0.0.0/0", "public default route")
+        _emit_import(lines, tfvars_posix, 'aws_route.public_default["default"]', f"{public_rt_id}_0.0.0.0/0", "public default route")
 
     for cidr in private_cidrs:
         rt_id = private_rt_by_cidr.get(cidr) or ""
@@ -414,15 +512,40 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         _emit_import(lines, tfvars_posix, addr, rid, f"nonroutable default route {cidr}")
 
     # NACLs
-    _emit_import(lines, tfvars_posix, "module.nacls.aws_network_acl.public", (public_nacl or {}).get("id") or "", "public NACL")
+    public_nacl_id = (public_nacl or {}).get("id") or ""
+    _emit_import(lines, tfvars_posix, "module.nacls.aws_network_acl.public[0]", public_nacl_id, "public NACL")
     _emit_import(
         lines,
         tfvars_posix,
-        "module.nacls.aws_network_acl.private_nonroutable",
+        "module.nacls.aws_network_acl.private_nonroutable[0]",
         prn_nacl_id,
         "private+nonroutable NACL",
     )
-    _emit_import(lines, tfvars_posix, "module.nacls.aws_network_acl_rule.nonroutable_10_rule", nonroutable_10_import_id, "NACL rule nonroutable_10_rule")
+
+    # NACL rules: import only those declared in tfvars (by rule_number)
+    nacl_rules = data.get("network_acl_rules") or []
+    _emit_nacl_rule_imports(
+        lines,
+        tfv,
+        module_prefix="module.nacls",
+        nacl_id=public_nacl_id,
+        nacl_rules=nacl_rules,
+        ingress_resource="public_ingress",
+        egress_resource="public_egress",
+        allowed_ingress_rule_numbers=tfv.get("nacl_public_ingress_rule_numbers") or [],
+        allowed_egress_rule_numbers=tfv.get("nacl_public_egress_rule_numbers") or [],
+    )
+    _emit_nacl_rule_imports(
+        lines,
+        tfv,
+        module_prefix="module.nacls",
+        nacl_id=prn_nacl_id,
+        nacl_rules=nacl_rules,
+        ingress_resource="private_ingress",
+        egress_resource="private_egress",
+        allowed_ingress_rule_numbers=tfv.get("nacl_private_ingress_rule_numbers") or [],
+        allowed_egress_rule_numbers=tfv.get("nacl_private_egress_rule_numbers") or [],
+    )
 
     # DHCP
     _emit_import(lines, tfvars_posix, "module.dhcp_options.aws_vpc_dhcp_options.this", dhcp_id, "DHCP options")
@@ -436,12 +559,12 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     )
 
     # Security group for endpoints
-    _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg.aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
+    _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg[0].aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
 
     # VPC endpoints
-    _emit_import(lines, tfvars_posix, "module.s3_vpc_endpoint.aws_vpc_endpoint.this", vpce_by_suffix.get("s3") or "", "S3 VPC endpoint")
-    _emit_import(lines, tfvars_posix, "module.ec2_vpc_endpoint.aws_vpc_endpoint.this", vpce_by_suffix.get("ec2") or "", "EC2 VPC endpoint")
-    _emit_import(lines, tfvars_posix, "module.ssm_vpc_endpoint.aws_vpc_endpoint.this", vpce_by_suffix.get("ssm") or "", "SSM VPC endpoint")
+    _emit_import(lines, tfvars_posix, "module.s3_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("s3") or "", "S3 VPC endpoint")
+    _emit_import(lines, tfvars_posix, "module.ec2_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("ec2") or "", "EC2 VPC endpoint")
+    _emit_import(lines, tfvars_posix, "module.ssm_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("ssm") or "", "SSM VPC endpoint")
 
     lines.append("\necho \"Done.\"\n")
     lines.append('echo "Summary: imported=$IMPORTED skipped=$SKIPPED failed=$FAILED"')
@@ -462,12 +585,12 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     lines.append('')
     lines.append(r'SUBNETS=$(count_re "^module\\.(public|private|nonroutable)_subnets\\[\\\".*\\\"\\]\\.aws_subnet\\.child_module$")')
     lines.append(r'NACLS=$(count_re "^module\\.nacls\\.aws_network_acl\\..+$")')
-    lines.append(r'ROUTE_TABLES=$(count_re "^module\\.(public_route_table|private_route_tables\\[\\\".*\\\"\\]|nonroutable_route_tables\\[\\\".*\\\"\\])\\.aws_route_table\\.this$")')
+    lines.append(r'ROUTE_TABLES=$(count_re "^module\\.(public_route_table\\[0\\]|private_route_tables\\[\\\".*\\\"\\]|nonroutable_route_tables\\[\\\".*\\\"\\])\\.aws_route_table\\.this$")')
     lines.append(r'NAT_GWS=$(count_re "^module\\.gateways\\.aws_nat_gateway\\.(public|private)\\[\\\".*\\\"\\]$")')
     lines.append(r'EIPS=$(count_re "^module\\.gateways\\.aws_eip\\.nat_eip\\[\\\".*\\\"\\]$")')
     lines.append(r'IGW_COUNT=$(count_re "^module\\.gateways\\.aws_internet_gateway\\.igw\\[0\\]$")')
-    lines.append(r'VPCE=$(count_re "^module\\.(s3|ec2|ssm)_vpc_endpoint\\.aws_vpc_endpoint\\.this$")')
-    lines.append(r'SGS=$(count_re "^module\\.vpc_endpoints_sg\\.aws_security_group\\.this$")')
+    lines.append(r'VPCE=$(count_re "^module\\.(s3|ec2|ssm)_vpc_endpoint\\[0\\]\\.aws_vpc_endpoint\\.this$")')
+    lines.append(r'SGS=$(count_re "^module\\.vpc_endpoints_sg\\[0\\]\\.aws_security_group\\.this$")')
     lines.append(r'DHCP_COUNT=$(count_re "^module\\.dhcp_options\\.aws_vpc_dhcp_options\\.this$")')
     lines.append('')
     lines.append('echo "Subnets: $SUBNETS"')
