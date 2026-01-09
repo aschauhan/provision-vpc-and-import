@@ -168,8 +168,11 @@ def main() -> int:
             None,
         )
         env_tag = _tag_value(vpc.get('Tags', []), 'environment') or 'dev'
+        
+        # Sanitize environment tag for folder name (Windows-safe)
+        env_tag_safe = re.sub(r'[^a-zA-Z0-9_-]', '-', env_tag.lower())
 
-        env_folder = os.path.join('env', env_tag)
+        env_folder = os.path.join('env', env_tag_safe)
         os.makedirs(env_folder, exist_ok=True)
 
         if vpc_name:
