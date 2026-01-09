@@ -14,6 +14,16 @@
 
 **No duplicate Terraform files** - All environments use the root main.tf.
 
+## Resource Validation
+
+Both `json_to_tfvars.py` and `generate_import_commands.py` now include **automatic validation**:
+- ✅ Verifies all discovered resources are included
+- ✅ Lists skipped resources with detailed reasons
+- ✅ Reports coverage percentage
+- ✅ Identifies potential issues before import
+
+See [VALIDATION_REPORT.md](../VALIDATION_REPORT.md) for details.
+
 ## Deployment Process
 
 All Terraform commands are run **from the root directory**, using `-backend-config` and `-var-file` to target specific VPCs.

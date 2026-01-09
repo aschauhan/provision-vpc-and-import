@@ -418,6 +418,120 @@ def _write_backend_config(out_dir: str, env: str, state_folder: str, region: str
 	return path
 
 
+def _validate_tfvars_coverage(data: dict, vpc_endpoint_sg_ids: set) -> dict:
+	"""Validate that all discovered resources will be included in tfvars."""
+	validation = {
+		'total_resources': 0,
+		'included_resources': 0,
+		'skipped_resources': [],
+		'warnings': []
+	}
+	
+	# VPC
+	if data.get('vpc'):
+		validation['total_resources'] += 1
+		validation['included_resources'] += 1
+	
+	# CIDR associations
+	cidrs = data.get('cidr_block_associations', [])
+	validation['total_resources'] += len(cidrs)
+	validation['included_resources'] += len(cidrs)
+	
+	# Subnets
+	subnets = data.get('subnets', [])
+	validation['total_resources'] += len(subnets)
+	for s in subnets:
+		tier = s.get('tier')
+		if tier in ['public', 'private', 'nonroutable']:
+			validation['included_resources'] += 1
+		else:
+			validation['skipped_resources'].append({
+				'type': 'subnet',
+				'id': s.get('id'),
+				'reason': f"Unknown tier '{tier}' - must be public/private/nonroutable"
+			})
+	
+	# Route tables
+	rts = data.get('route_tables', [])
+	validation['total_resources'] += len(rts)
+	validation['included_resources'] += len(rts)
+	
+	# Routes
+	routes = data.get('routes', [])
+	for r in routes:
+		validation['total_resources'] += 1
+		dest = r.get('DestinationCidrBlock', '')
+		if dest in ['0.0.0.0/0', ''] or r.get('GatewayId', '').startswith('local'):
+			validation['skipped_resources'].append({
+				'type': 'route',
+				'dest': dest,
+				'reason': 'Default route or local route (managed by modules)'
+			})
+		else:
+			validation['included_resources'] += 1
+	
+	# Security Groups
+	sgs = data.get('security_groups', [])
+	validation['total_resources'] += len(sgs)
+	for sg in sgs:
+		sg_id = sg.get('id', '')
+		if sg_id in vpc_endpoint_sg_ids:
+			validation['skipped_resources'].append({
+				'type': 'security_group',
+				'id': sg_id,
+				'reason': 'VPC endpoint SG (managed by vpc_endpoints_sg module)'
+			})
+		elif sg.get('group_name') == 'default':
+			validation['skipped_resources'].append({
+				'type': 'security_group',
+				'id': sg_id,
+				'reason': 'Default VPC security group (AWS managed)'
+			})
+		else:
+			validation['included_resources'] += 1
+	
+	# NAT Gateways
+	nats = data.get('nat_gateways', [])
+	validation['total_resources'] += len(nats)
+	validation['included_resources'] += len(nats)
+	
+	# Internet Gateway
+	if data.get('internet_gateway'):
+		validation['total_resources'] += 1
+		validation['included_resources'] += 1
+	
+	# VPC Endpoints
+	endpoints = data.get('vpc_endpoints', [])
+	validation['total_resources'] += len(endpoints)
+	for ep in endpoints:
+		if ep.get('type') == 'Gateway':
+			validation['included_resources'] += 1
+		elif ep.get('type') == 'Interface':
+			validation['included_resources'] += 1
+		else:
+			validation['warnings'].append(f"Unknown endpoint type: {ep.get('type')}")
+	
+	# DHCP Options
+	if data.get('dhcp_options'):
+		validation['total_resources'] += 1
+		validation['included_resources'] += 1
+	
+	# NACLs
+	nacls = data.get('network_acls', [])
+	validation['total_resources'] += len(nacls)
+	for nacl in nacls:
+		if nacl.get('is_default'):
+			validation['skipped_resources'].append({
+				'type': 'nacl',
+				'id': nacl.get('id'),
+				'reason': 'Default NACL (AWS managed, cannot be imported)'
+			})
+		else:
+			validation['included_resources'] += 1
+	
+	return validation
+
+
 def _write_tfvars(discovery_path: str, out_path: str) -> dict:
 	with open(discovery_path, "r") as f:
 		data = json.load(f)
@@ -428,6 +542,9 @@ def _write_tfvars(discovery_path: str, out_path: str) -> dict:
 	
 	# Extract VPC endpoint SG IDs first
 	vpc_endpoint_sg_ids = _extract_vpc_endpoint_sgs(data)
+	
+	# Validate coverage
+	validation = _validate_tfvars_coverage(data, vpc_endpoint_sg_ids)
 	
 	with open(out_path, "w", newline="\n") as f:
 		f.write("base_tag = {\n")
@@ -597,6 +714,32 @@ def _write_tfvars(discovery_path: str, out_path: str) -> dict:
 				f.write("]\n")
 			else:
 				f.write(f"{tier}_extra_routes = []\n")
+
+	# Print validation report
+	print("\n" + "="*60)
+	print("TFVARS GENERATION VALIDATION REPORT")
+	print("="*60)
+	print(f"Total resources discovered: {validation['total_resources']}")
+	print(f"Resources included in tfvars: {validation['included_resources']}")
+	print(f"Resources skipped: {len(validation['skipped_resources'])}")
+	
+	if validation['skipped_resources']:
+		print("\nSkipped Resources (with reasons):")
+		for skip in validation['skipped_resources']:
+			skip_type = skip.get('type', 'unknown')
+			skip_id = skip.get('id', skip.get('dest', 'N/A'))
+			reason = skip.get('reason', 'No reason provided')
+			print(f"  • {skip_type}: {skip_id}")
+			print(f"    Reason: {reason}")
+	
+	if validation['warnings']:
+		print("\nWarnings:")
+		for warn in validation['warnings']:
+			print(f"  ⚠ {warn}")
+	
+	coverage_pct = (validation['included_resources'] / validation['total_resources'] * 100) if validation['total_resources'] > 0 else 0
+	print(f"\nCoverage: {coverage_pct:.1f}% of discovered resources will be managed in Terraform")
+	print("="*60 + "\n")
 
 	return values
 

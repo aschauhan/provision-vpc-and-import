@@ -166,6 +166,153 @@ def _normalize_protocol(proto: Any) -> str:
     return str(proto).strip()
 
 
+def _validate_import_coverage(discovery: Dict[str, Any], tfv: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate that all importable resources from discovery JSON will get import commands."""
+    validation = {
+        'total_importable': 0,
+        'will_import': 0,
+        'skipped': [],
+        'warnings': []
+    }
+    
+    # VPC
+    if discovery.get('vpc'):
+        validation['total_importable'] += 1
+        validation['will_import'] += 1
+    
+    # CIDR associations (non-primary)
+    cidrs = [c for c in discovery.get('cidr_block_associations', []) if not c.get('primary')]
+    validation['total_importable'] += len(cidrs)
+    validation['will_import'] += len(cidrs)
+    
+    # Subnets
+    subnets = discovery.get('subnets', [])
+    for s in subnets:
+        validation['total_importable'] += 1
+        tier = (s.get('tier') or '').lower()
+        if tier in ['public', 'private', 'nonroutable']:
+            validation['will_import'] += 1
+        else:
+            validation['skipped'].append({
+                'type': 'subnet',
+                'id': s.get('id'),
+                'reason': f"Unknown tier '{tier}'"
+            })
+    
+    # Route tables
+    rts = discovery.get('route_tables', [])
+    validation['total_importable'] += len(rts)
+    validation['will_import'] += len(rts)
+    
+    # Route table associations
+    rtas = discovery.get('route_table_associations', [])
+    for rta in rtas:
+        validation['total_importable'] += 1
+        if rta.get('main'):
+            validation['skipped'].append({
+                'type': 'route_table_association',
+                'id': rta.get('id'),
+                'reason': 'Main route table association (AWS managed)'
+            })
+        else:
+            validation['will_import'] += 1
+    
+    # Security Groups
+    sgs = discovery.get('security_groups', [])
+    sg_keys_in_tfvars = set(tfv.get('security_group_keys', []))
+    for sg in sgs:
+        validation['total_importable'] += 1
+        if sg.get('group_name') == 'default':
+            validation['skipped'].append({
+                'type': 'security_group',
+                'id': sg.get('id'),
+                'reason': 'Default VPC security group (AWS managed)'
+            })
+        elif not sg_keys_in_tfvars:
+            validation['skipped'].append({
+                'type': 'security_group',
+                'id': sg.get('id'),
+                'reason': 'Not found in tfvars security_groups map'
+            })
+        else:
+            validation['will_import'] += 1
+    
+    # NAT Gateways
+    nats = [n for n in discovery.get('nat_gateways', []) if n.get('state') != 'deleted']
+    validation['total_importable'] += len(nats)
+    validation['will_import'] += len(nats)
+    
+    # Internet Gateway
+    if discovery.get('internet_gateway'):
+        validation['total_importable'] += 1
+        validation['will_import'] += 1
+    
+    # VPC Endpoints
+    endpoints = discovery.get('vpc_endpoints', [])
+    validation['total_importable'] += len(endpoints)
+    enable_s3 = tfv.get('enable_s3_gateway_endpoint', False)
+    enable_interface = tfv.get('enable_interface_endpoints', False)
+    for ep in endpoints:
+        ep_type = ep.get('type', '')
+        if ep_type == 'Gateway' and not enable_s3:
+            validation['skipped'].append({
+                'type': 'vpc_endpoint',
+                'id': ep.get('id'),
+                'reason': 'Gateway endpoint but enable_s3_gateway_endpoint=false in tfvars'
+            })
+        elif ep_type == 'Interface' and not enable_interface:
+            validation['skipped'].append({
+                'type': 'vpc_endpoint',
+                'id': ep.get('id'),
+                'reason': 'Interface endpoint but enable_interface_endpoints=false in tfvars'
+            })
+        else:
+            validation['will_import'] += 1
+    
+    # DHCP Options
+    if discovery.get('dhcp_options'):
+        validation['total_importable'] += 2  # options + association
+        validation['will_import'] += 2
+    
+    # NACLs
+    nacls = discovery.get('network_acls', [])
+    for nacl in nacls:
+        validation['total_importable'] += 1
+        if nacl.get('is_default'):
+            validation['skipped'].append({
+                'type': 'nacl',
+                'id': nacl.get('id'),
+                'reason': 'Default NACL (AWS managed, will cause import errors)'
+            })
+        else:
+            validation['will_import'] += 1
+    
+    # Extra routes
+    routes = discovery.get('routes', [])
+    for r in routes:
+        dest = r.get('DestinationCidrBlock', '')
+        gw = r.get('GatewayId', '')
+        if dest and dest != '0.0.0.0/0' and not gw.startswith('local'):
+            validation['total_importable'] += 1
+            # Check if in tfvars
+            found_in_tfvars = False
+            for tier in ['public', 'private', 'nonroutable']:
+                tier_routes = tfv.get(f'{tier}_extra_route_cidrs', [])
+                if dest in tier_routes:
+                    found_in_tfvars = True
+                    break
+            if found_in_tfvars:
+                validation['will_import'] += 1
+            else:
+                validation['skipped'].append({
+                    'type': 'route',
+                    'dest': dest,
+                    'reason': 'Not found in tfvars extra_routes'
+                })
+    
+    return validation
+
+
 def _emit_nacl_rule_imports(
     lines: List[str],
     tfv: Dict[str, Any],
@@ -265,6 +412,9 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     # stash for helpers that call _emit_import
     tfv["_tfvars_path"] = tfvars_path
     vpc_name = tfv.get("vpc_name") or _tag_value((data.get("vpc") or {}).get("tags") or [], "Name") or "vpc"
+
+    # Validate import coverage
+    validation = _validate_import_coverage(data, tfv)
 
     public_cidrs = tfv.get("public_subnet_cidrs") or []
     private_cidrs = tfv.get("private_subnet_cidrs") or []
@@ -707,6 +857,32 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))
+    
+    # Print validation report
+    print("\n" + "="*60)
+    print("IMPORT SCRIPT VALIDATION REPORT")
+    print("="*60)
+    print(f"Total importable resources in discovery JSON: {validation['total_importable']}")
+    print(f"Resources that will get import commands: {validation['will_import']}")
+    print(f"Resources skipped: {len(validation['skipped'])}")
+    
+    if validation['skipped']:
+        print("\nSkipped Resources (will NOT be imported):")
+        for skip in validation['skipped']:
+            skip_type = skip.get('type', 'unknown')
+            skip_id = skip.get('id', skip.get('dest', 'N/A'))
+            reason = skip.get('reason', 'No reason provided')
+            print(f"  • {skip_type}: {skip_id}")
+            print(f"    Reason: {reason}")
+    
+    if validation['warnings']:
+        print("\nWarnings:")
+        for warn in validation['warnings']:
+            print(f"  ⚠ {warn}")
+    
+    coverage_pct = (validation['will_import'] / validation['total_importable'] * 100) if validation['total_importable'] > 0 else 0
+    print(f"\nImport Coverage: {coverage_pct:.1f}% of discovered resources will be imported")
+    print("="*60 + "\n")
 
 
 def main() -> int:
