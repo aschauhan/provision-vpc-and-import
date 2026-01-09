@@ -277,17 +277,17 @@ locals {
   ])
 
   public_extra_routes = {
-    for r in var.public_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}" => r
+    for idx, r in var.public_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}" => r
     if contains(local.allowed_route_target_types, r.target_type)
   }
 
   private_extra_routes = {
-    for r in var.private_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}" => r
+    for idx, r in var.private_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}" => r
     if contains(local.allowed_route_target_types, r.target_type)
   }
 
   nonroutable_extra_routes = {
-    for r in var.nonroutable_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}" => r
+    for idx, r in var.nonroutable_extra_routes : "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}" => r
     if contains(local.allowed_route_target_types, r.target_type)
   }
 }

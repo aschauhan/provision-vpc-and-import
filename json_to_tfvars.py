@@ -407,7 +407,9 @@ def _extract_nacl_rules(discovery: dict, vpc_name: str) -> dict:
 
 def _write_backend_config(out_dir: str, env: str, state_folder: str, region: str, bucket: str, prefix: str) -> str:
 	# Match repo convention: envs/<env>/<vpcname>/terraform.tfstate
-	key = f"{prefix}/{env}/{state_folder}/terraform.tfstate"
+	# Sanitize env for S3 key (remove special chars like ::)
+	env_safe = re.sub(r'[^a-zA-Z0-9_/-]', '-', env)
+	key = f"{prefix}/{env_safe}/{state_folder}/terraform.tfstate"
 	path = os.path.join(out_dir, "backend-config")
 	with open(path, "w", newline="\n") as f:
 		f.write(f'bucket = "{bucket}"\n')
