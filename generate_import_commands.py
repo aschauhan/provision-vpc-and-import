@@ -94,6 +94,48 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
             uniq.append(n)
         return uniq
 
+    def parse_security_groups() -> List[str]:
+        # Parse security_groups map keys
+        # security_groups = {
+        #   "key1" = { ... }
+        # }
+        sg_re = re.compile(r'^\s*\"([^\"]+)\"\s*=\s*\{\s*$')
+        in_sg_block = False
+        sg_keys = []
+        for ln in lines:
+            if re.match(r'^\s*security_groups\s*=\s*\{\s*$', ln):
+                in_sg_block = True
+                continue
+            if in_sg_block:
+                if re.match(r'^\s*\}\s*$', ln):
+                    break
+                m = sg_re.match(ln)
+                if m:
+                    sg_keys.append(m.group(1))
+        return sg_keys
+
+    def parse_extra_routes(tier: str) -> List[str]:
+        # Parse <tier>_extra_routes list to get destination CIDRs
+        # public_extra_routes = [
+        #   { destination_cidr_block = "1.2.3.0/24" ... },
+        # ]
+        list_name = f"{tier}_extra_routes"
+        start_re = re.compile(rf"^\s*{re.escape(list_name)}\s*=\s*\[\s*$")
+        end_re = re.compile(r"^\s*\]\s*$")
+        in_list = False
+        cidrs = []
+        for ln in lines:
+            if not in_list:
+                if start_re.match(ln):
+                    in_list = True
+                continue
+            if end_re.match(ln):
+                break
+            m = re.search(r'destination_cidr_block\s*=\s*\"([^\"]+)\"', ln)
+            if m:
+                cidrs.append(m.group(1))
+        return cidrs
+
     return {
         "environment": parse_string("environment"),
         "region": parse_string("region"),
@@ -109,6 +151,11 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
         "nacl_public_egress_rule_numbers": parse_rule_numbers("public_egress"),
         "nacl_private_ingress_rule_numbers": parse_rule_numbers("private_ingress"),
         "nacl_private_egress_rule_numbers": parse_rule_numbers("private_egress"),
+        # Extra resources
+        "security_group_keys": parse_security_groups(),
+        "public_extra_route_cidrs": parse_extra_routes("public"),
+        "private_extra_route_cidrs": parse_extra_routes("private"),
+        "nonroutable_extra_route_cidrs": parse_extra_routes("nonroutable"),
     }
 
 
@@ -561,10 +608,58 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     # Security group for endpoints
     _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg[0].aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
 
+    # Extra security groups from tfvars
+    sg_keys = tfv.get("security_group_keys", [])
+    sgs_by_name = {sg.get("group_name"): sg for sg in data.get("security_groups", []) if sg.get("group_name")}
+    
+    for sg_key in sg_keys:
+        # Try to find matching SG in discovered data
+        sg = sgs_by_name.get(sg_key)
+        if sg:
+            sg_id = sg.get("id", "")
+            addr = f'module.security_groups["{sg_key}"].aws_security_group.this'
+            _emit_import(lines, tfvars_posix, addr, sg_id, f"security group {sg_key}")
+
     # VPC endpoints
     _emit_import(lines, tfvars_posix, "module.s3_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("s3") or "", "S3 VPC endpoint")
     _emit_import(lines, tfvars_posix, "module.ec2_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("ec2") or "", "EC2 VPC endpoint")
     _emit_import(lines, tfvars_posix, "module.ssm_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("ssm") or "", "SSM VPC endpoint")
+
+    # Extra routes from tfvars
+    routes_by_rt_dest = {}
+    for route in data.get("routes", []):
+        rt_id = route.get("route_table_id", "")
+        dest = route.get("DestinationCidrBlock", "")
+        if rt_id and dest:
+            routes_by_rt_dest[f"{rt_id}_{dest}"] = route
+
+    # Public extra routes
+    for dest_cidr in tfv.get("public_extra_route_cidrs", []):
+        if public_rt_id:
+            route_key = f"{public_rt_id}_{dest_cidr}"
+            addr = f'aws_route.public_extra["{dest_cidr}"]'
+            rid = f"{public_rt_id}_{dest_cidr}"
+            _emit_import(lines, tfvars_posix, addr, rid, f"public extra route {dest_cidr}")
+
+    # Private extra routes
+    for dest_cidr in tfv.get("private_extra_route_cidrs", []):
+        for cidr in private_cidrs:
+            rt_id = private_rt_by_cidr.get(cidr, "")
+            if rt_id:
+                route_key = f"{rt_id}_{dest_cidr}"
+                addr = f'aws_route.private_extra["{cidr}_{dest_cidr}"]'
+                rid = f"{rt_id}_{dest_cidr}"
+                _emit_import(lines, tfvars_posix, addr, rid, f"private extra route {cidr} -> {dest_cidr}")
+
+    # Nonroutable extra routes
+    for dest_cidr in tfv.get("nonroutable_extra_route_cidrs", []):
+        for cidr in nonroutable_cidrs:
+            rt_id = nonroutable_rt_by_cidr.get(cidr, "")
+            if rt_id:
+                route_key = f"{rt_id}_{dest_cidr}"
+                addr = f'aws_route.nonroutable_extra["{cidr}_{dest_cidr}"]'
+                rid = f"{rt_id}_{dest_cidr}"
+                _emit_import(lines, tfvars_posix, addr, rid, f"nonroutable extra route {cidr} -> {dest_cidr}")
 
     lines.append("\necho \"Done.\"\n")
     lines.append('echo "Summary: imported=$IMPORTED skipped=$SKIPPED failed=$FAILED"')
@@ -590,12 +685,14 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     lines.append(r'EIPS=$(count_re "^module\\.gateways\\.aws_eip\\.nat_eip\\[\\\".*\\\"\\]$")')
     lines.append(r'IGW_COUNT=$(count_re "^module\\.gateways\\.aws_internet_gateway\\.igw\\[0\\]$")')
     lines.append(r'VPCE=$(count_re "^module\\.(s3|ec2|ssm)_vpc_endpoint\\[0\\]\\.aws_vpc_endpoint\\.this$")')
-    lines.append(r'SGS=$(count_re "^module\\.vpc_endpoints_sg\\[0\\]\\.aws_security_group\\.this$")')
+    lines.append(r'SGS=$(count_re "^module\\.(vpc_endpoints_sg\\[0\\]|security_groups\\[\\\".*\\\"\\])\\.aws_security_group\\.this$")')
     lines.append(r'DHCP_COUNT=$(count_re "^module\\.dhcp_options\\.aws_vpc_dhcp_options\\.this$")')
+    lines.append(r'ROUTES=$(count_re "^aws_route\\.(public|private|nonroutable)_(default|extra)\\[.*\\]$")')
     lines.append('')
     lines.append('echo "Subnets: $SUBNETS"')
     lines.append('echo "NACLs: $NACLS"')
     lines.append('echo "Route Tables: $ROUTE_TABLES"')
+    lines.append('echo "Routes: $ROUTES"')
     lines.append('echo "NAT Gateways: $NAT_GWS"')
     lines.append('echo "EIPs: $EIPS"')
     lines.append('if [[ "$IGW_COUNT" -gt 0 ]]; then echo "IGW: yes"; else echo "IGW: no"; fi')

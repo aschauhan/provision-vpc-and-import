@@ -108,10 +108,10 @@ def main() -> int:
     # Ask for account number (required per your request)
     account_id = args.account_id or _prompt_required("Enter AWS account ID: ")
 
-    profile = args.profile or _prompt_optional("Enter AWS CLI profile name", "default")
+    profile = args.profile if args.profile is not None else _prompt_optional("Enter AWS CLI profile name", "default")
 
     region_default = args.region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    region = args.region or _prompt_optional("Enter AWS region", region_default)
+    region = args.region if args.region is not None else _prompt_optional("Enter AWS region", region_default)
 
     try:
         session = boto3.Session(profile_name=profile, region_name=region)
@@ -298,25 +298,28 @@ def main() -> int:
                     })
         resources['default_routes'] = default_routes
 
-        # Security Groups
+        # Security Groups (with full ingress/egress rules)
         sgs = ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['SecurityGroups']
         resources['security_groups'] = [
             {
                 'id': sg['GroupId'],
                 'group_name': sg.get('GroupName'),
                 'description': sg.get('Description'),
+                'ingress': sg.get('IpPermissions', []),
+                'egress': sg.get('IpPermissionsEgress', []),
                 'tags': sg.get('Tags', [])
             }
             for sg in sgs
         ]
 
-        # VPC Endpoints
+        # VPC Endpoints (with security group associations)
         endpoints = ec2.describe_vpc_endpoints(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['VpcEndpoints']
         resources['vpc_endpoints'] = [
             {
                 'id': e['VpcEndpointId'],
                 'service_name': e.get('ServiceName'),
                 'type': e.get('VpcEndpointType'),
+                'security_group_ids': e.get('Groups', []),
                 'tags': e.get('Tags', [])
             }
             for e in endpoints
