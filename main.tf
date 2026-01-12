@@ -419,7 +419,7 @@ module "vpc_endpoints_sg" {
 
 module "extra_security_groups" {
   source   = "./modules/security-group"
-  for_each = var.security_groups
+  for_each = var.extra_security_groups
 
   name        = each.value.name
   description = each.value.description

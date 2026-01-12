@@ -171,7 +171,7 @@ variable "vpc_endpoints_security_group_ids" {
   default     = []
 }
 
-variable "security_groups" {
+variable "extra_security_groups" {
   description = "Additional security groups to create in this VPC (keyed map) and manage via tfvars."
   type = map(object({
     name        = string

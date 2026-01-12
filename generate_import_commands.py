@@ -232,7 +232,7 @@ def _validate_import_coverage(discovery: Dict[str, Any], tfv: Dict[str, Any]) ->
             validation['skipped'].append({
                 'type': 'security_group',
                 'id': sg.get('id'),
-                'reason': 'Not found in tfvars security_groups map'
+                'reason': 'Not found in tfvars extra_security_groups map'
             })
         else:
             validation['will_import'] += 1
@@ -767,7 +767,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         sg = sgs_by_name.get(sg_key)
         if sg:
             sg_id = sg.get("id", "")
-            addr = f'module.security_groups["{sg_key}"].aws_security_group.this'
+            addr = f'module.extra_security_groups["{sg_key}"].aws_security_group.this'
             _emit_import(lines, tfvars_posix, addr, sg_id, f"security group {sg_key}")
 
     # VPC endpoints
@@ -835,7 +835,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     lines.append(r'EIPS=$(count_re "^module\\.gateways\\.aws_eip\\.nat_eip\\[\\\".*\\\"\\]$")')
     lines.append(r'IGW_COUNT=$(count_re "^module\\.gateways\\.aws_internet_gateway\\.igw\\[0\\]$")')
     lines.append(r'VPCE=$(count_re "^module\\.(s3|ec2|ssm)_vpc_endpoint\\[0\\]\\.aws_vpc_endpoint\\.this$")')
-    lines.append(r'SGS=$(count_re "^module\\.(vpc_endpoints_sg\\[0\\]|security_groups\\[\\\".*\\\"\\])\\.aws_security_group\\.this$")')
+    lines.append(r'SGS=$(count_re "^module\\.(vpc_endpoints_sg\\[0\\]|extra_security_groups\\[\\\".*\\\"\\])\\.aws_security_group\\.this$")')
     lines.append(r'DHCP_COUNT=$(count_re "^module\\.dhcp_options\\.aws_vpc_dhcp_options\\.this$")')
     lines.append(r'ROUTES=$(count_re "^aws_route\\.(public|private|nonroutable)_(default|extra)\\[.*\\]$")')
     lines.append('')

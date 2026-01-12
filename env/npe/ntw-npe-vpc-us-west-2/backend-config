@@ -1,3 +1,0 @@
-bucket = "tmo-aws-tf-state-bucket"
-key    = "envs/npe/ntw-npe-vpc-us-west-2/terraform.tfstate"
-region = "us-east-1"

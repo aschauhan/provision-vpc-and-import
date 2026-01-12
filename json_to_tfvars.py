@@ -637,7 +637,7 @@ def _write_tfvars(discovery_path: str, out_path: str) -> dict:
 		security_groups = _extract_security_groups(data, vpc_endpoint_sg_ids)
 		if security_groups:
 			f.write("\n# Security groups discovered from VPC\n")
-			f.write("security_groups = {\n")
+			f.write("extra_security_groups = {\n")
 			for key, sg in security_groups.items():
 				f.write(f"  \"{key}\" = {{\n")
 				f.write(f"    name        = \"{sg['name']}\"\n")
@@ -694,7 +694,7 @@ def _write_tfvars(discovery_path: str, out_path: str) -> dict:
 			f.write("}\n")
 		else:
 			f.write("\n# No additional security groups discovered\n")
-			f.write("security_groups = {}\n")
+			f.write("extra_security_groups = {}\n")
 		
 		# Extra routes discovered from AWS
 		rt_tier_map = _build_route_table_tier_map(data)
