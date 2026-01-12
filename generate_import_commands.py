@@ -494,30 +494,43 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     # IGW
     igw_id = ((data.get("internet_gateway") or {}).get("id")) or ""
 
-    # NATs + EIPs: keyed by CIDR
+    # NATs + EIPs: keyed by subnet CIDR
+    # Map NATs by their subnet ID first, then match to CIDR (works with any naming convention)
     nat_public_by_key: Dict[str, Dict[str, Any]] = {}
     nat_private_by_key: Dict[str, Dict[str, Any]] = {}
     eipalloc_by_key: Dict[str, str] = {}
 
     for nat in data.get("nat_gateways") or []:
         nat_id = nat.get("id")
-        name = _tag_value(nat.get("tags") or [], "Name")
-        if not nat_id or not name:
+        subnet_id = nat.get("subnet_id")
+        if not nat_id or not subnet_id:
             continue
-        parsed = _extract_nat_key_from_name(name)
-        if not parsed:
+        
+        # Find the subnet CIDR for this NAT's subnet
+        subnet = subnets_by_id.get(subnet_id)
+        if not subnet:
             continue
-        kind, key_cidr = parsed
-        if kind == "public" and key_cidr in private_cidrs:
-            nat_public_by_key[key_cidr] = nat
+        subnet_cidr = subnet.get("cidr_block")
+        if not subnet_cidr:
+            continue
+        
+        # Determine NAT type by checking connectivity type or by subnet tier
+        # Public NATs have connectivity_type "public" and are deployed in private subnets
+        # Private NATs have connectivity_type "private" and are deployed in nonroutable subnets
+        connectivity_type = nat.get("connectivity_type", "public")
+        
+        if connectivity_type == "public" and subnet_cidr in private_cidrs:
+            # Public NAT in private subnet
+            nat_public_by_key[subnet_cidr] = nat
             # allocation id for public NAT
             for addr in nat.get("nat_gateway_addresses") or []:
                 alloc = addr.get("AllocationId")
                 if alloc:
-                    eipalloc_by_key[key_cidr] = alloc
+                    eipalloc_by_key[subnet_cidr] = alloc
                     break
-        elif kind == "private" and key_cidr in nonroutable_cidrs:
-            nat_private_by_key[key_cidr] = nat
+        elif connectivity_type == "private" and subnet_cidr in nonroutable_cidrs:
+            # Private NAT in nonroutable subnet
+            nat_private_by_key[subnet_cidr] = nat
 
     # EIPs: in JSON, id is allocation id
     eips_by_alloc = {e.get("id"): e for e in data.get("eips") or [] if e.get("id")}
