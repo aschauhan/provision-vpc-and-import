@@ -514,12 +514,23 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         if not subnet_cidr:
             continue
         
-        # Determine NAT type by checking connectivity type or by subnet tier
-        # Public NATs have connectivity_type "public" and are deployed in private subnets
-        # Private NATs have connectivity_type "private" and are deployed in nonroutable subnets
-        connectivity_type = nat.get("connectivity_type", "public")
+        # Determine NAT type by connectivity_type field or by which subnet list it's in
+        # Public NATs: connectivity_type="public" (default), deployed in private subnets, have EIP
+        # Private NATs: connectivity_type="private", deployed in nonroutable subnets, no EIP
+        connectivity_type = (nat.get("connectivity_type") or "public").lower()
+        has_allocation = any(addr.get("AllocationId") for addr in nat.get("nat_gateway_addresses") or [])
         
-        if connectivity_type == "public" and subnet_cidr in private_cidrs:
+        # Use subnet tier as fallback if connectivity_type doesn't match expected patterns
+        is_public_nat = False
+        is_private_nat = False
+        
+        if connectivity_type == "public" or has_allocation:
+            is_public_nat = True
+        elif connectivity_type == "private" and not has_allocation:
+            is_private_nat = True
+        
+        # Match by subnet CIDR
+        if is_public_nat and subnet_cidr in private_cidrs:
             # Public NAT in private subnet
             nat_public_by_key[subnet_cidr] = nat
             # allocation id for public NAT
@@ -528,7 +539,7 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
                 if alloc:
                     eipalloc_by_key[subnet_cidr] = alloc
                     break
-        elif connectivity_type == "private" and subnet_cidr in nonroutable_cidrs:
+        elif is_private_nat and subnet_cidr in nonroutable_cidrs:
             # Private NAT in nonroutable subnet
             nat_private_by_key[subnet_cidr] = nat
 
