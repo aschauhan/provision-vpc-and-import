@@ -22,11 +22,17 @@ def _tag_value(tags, key: str) -> str:
 
 
 def _infer_region(discovery: dict, fallback: str = "us-east-1") -> str:
+	# First check if region is explicitly stored in discovery JSON
+	stored_region = discovery.get("region")
+	if stored_region:
+		return stored_region
+	
 	# Prefer Region tag if present
 	tags = (discovery.get("vpc") or {}).get("tags") or []
 	region = _tag_value(tags, "Region")
 	if region:
 		return region
+	
 	# Infer from endpoint service names
 	for ep in discovery.get("vpc_endpoints", []) or []:
 		svc = (ep.get("service_name") or "")

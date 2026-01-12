@@ -191,6 +191,9 @@ def main() -> int:
             'cidr_block': vpc.get('CidrBlock', ''),
             'additional_cidrs': [assoc['CidrBlock'] for assoc in vpc.get('CidrBlockAssociationSet', []) if not assoc.get('Primary', True)]
         }
+        
+        # Add region to the discovery data
+        resources['region'] = region
 
         # VPC CIDR Block Associations (for aws_vpc_ipv4_cidr_block_association)
         resources['cidr_block_associations'] = [
