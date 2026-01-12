@@ -482,74 +482,92 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         elif tier == "nonroutable" and cidr in nonroutable_cidrs:
             nonroutable_rt_by_cidr[cidr] = rt_id
 
-    # NACLs by Name tag (matches module naming)
-    public_nacl_name = f"ntw-{vpc_name}-public-nacl"
-    prn_nacl_name = f"ntw-{vpc_name}-private-nonroutable-nacl"
+    # NACLs by Name tag - find by matching pattern (more flexible)
+    # Look for NACLs with "public" and "private" in their names
     nacls = data.get("network_acls") or []
-    public_nacl = _find_by_tag_name(nacls, public_nacl_name)
-    prn_nacl = _find_by_tag_name(nacls, prn_nacl_name)
-
+    custom_nacls = [n for n in nacls if not n.get("is_default")]
+    
+    public_nacl = None
+    prn_nacl = None
+    
+    for nacl in custom_nacls:
+        name = (_tag_value(nacl.get("tags") or [], "Name") or "").lower()
+        if "public" in name and not "private" in name:
+            public_nacl = nacl
+        elif "private" in name or "nonroutable" in name:
+            prn_nacl = nacl
+    
     prn_nacl_id = (prn_nacl or {}).get("id") or ""
 
     # IGW
     igw_id = ((data.get("internet_gateway") or {}).get("id")) or ""
 
-    # NATs + EIPs: keyed by subnet CIDR
-    # Map NATs by their subnet ID first, then match to CIDR (works with any naming convention)
+    # NATs + EIPs: Map NATs by checking each private/nonroutable subnet to find matching NAT
+    # Public NATs (with EIP) should map to private subnets for Terraform module keys
+    # Private NATs (no EIP) should map to nonroutable subnets for Terraform module keys
     nat_public_by_key: Dict[str, Dict[str, Any]] = {}
     nat_private_by_key: Dict[str, Dict[str, Any]] = {}
     eipalloc_by_key: Dict[str, str] = {}
 
-    for nat in data.get("nat_gateways") or []:
-        nat_id = nat.get("id")
-        subnet_id = nat.get("subnet_id")
-        if not nat_id or not subnet_id:
+    # Build lookup: NAT ID -> NAT data
+    nats_by_id = {nat.get("id"): nat for nat in data.get("nat_gateways") or [] if nat.get("id")}
+    
+    # For each private subnet, find a public NAT (by checking route tables for NAT gateway ID)
+    # For each nonroutable subnet, find a private NAT (by checking route tables for NAT gateway ID)
+    routes = data.get("routes") or []
+    
+    # Map route_table_id -> NAT gateway ID used in that route table
+    rt_nat_map: Dict[str, str] = {}
+    for route in routes:
+        rt_id = route.get("route_table_id")
+        nat_id = route.get("NatGatewayId")
+        if rt_id and nat_id and nat_id.startswith("nat-"):
+            rt_nat_map[rt_id] = nat_id
+    
+    # Map private subnets to public NATs via route tables
+    for cidr in private_cidrs:
+        rt_id = private_rt_by_cidr.get(cidr)
+        if not rt_id:
             continue
-        
-        # Find the subnet CIDR for this NAT's subnet
-        subnet = subnets_by_id.get(subnet_id)
-        if not subnet:
+        nat_id = rt_nat_map.get(rt_id)
+        if not nat_id:
             continue
-        subnet_cidr = subnet.get("cidr_block")
-        if not subnet_cidr:
-            continue
-        
-        # Determine NAT type by connectivity_type field or by which subnet list it's in
-        # Public NATs: connectivity_type="public" (default), deployed in private subnets, have EIP
-        # Private NATs: connectivity_type="private", deployed in nonroutable subnets, no EIP
-        connectivity_type = (nat.get("connectivity_type") or "public").lower()
-        has_allocation = any(addr.get("AllocationId") for addr in nat.get("nat_gateway_addresses") or [])
-        
-        # Use subnet tier as fallback if connectivity_type doesn't match expected patterns
-        is_public_nat = False
-        is_private_nat = False
-        
-        if connectivity_type == "public" or has_allocation:
-            is_public_nat = True
-        elif connectivity_type == "private" and not has_allocation:
-            is_private_nat = True
-        
-        # Match by subnet CIDR
-        if is_public_nat and subnet_cidr in private_cidrs:
-            # Public NAT in private subnet
-            nat_public_by_key[subnet_cidr] = nat
-            # allocation id for public NAT
+        nat = nats_by_id.get(nat_id)
+        if nat:
+            nat_public_by_key[cidr] = nat
+            # Get EIP allocation ID
             for addr in nat.get("nat_gateway_addresses") or []:
                 alloc = addr.get("AllocationId")
                 if alloc:
-                    eipalloc_by_key[subnet_cidr] = alloc
+                    eipalloc_by_key[cidr] = alloc
                     break
-        elif is_private_nat and subnet_cidr in nonroutable_cidrs:
-            # Private NAT in nonroutable subnet
-            nat_private_by_key[subnet_cidr] = nat
+    
+    # Map nonroutable subnets to private NATs via route tables
+    for cidr in nonroutable_cidrs:
+        rt_id = nonroutable_rt_by_cidr.get(cidr)
+        if not rt_id:
+            continue
+        nat_id = rt_nat_map.get(rt_id)
+        if not nat_id:
+            continue
+        nat = nats_by_id.get(nat_id)
+        if nat:
+            nat_private_by_key[cidr] = nat
 
     # EIPs: in JSON, id is allocation id
     eips_by_alloc = {e.get("id"): e for e in data.get("eips") or [] if e.get("id")}
 
-    # Security group: endpoints sg
+    # Security group: endpoints sg - find by matching "endpoint" in name
     sgs = data.get("security_groups") or []
-    endpoints_sg_name = f"{vpc_name}-endpoints-sg"
-    endpoints_sg = _find_by_tag_name(sgs, endpoints_sg_name)
+    custom_sgs = [sg for sg in sgs if not sg.get("is_default")]
+    
+    endpoints_sg = None
+    for sg in custom_sgs:
+        name = (_tag_value(sg.get("tags") or [], "Name") or "").lower()
+        if "endpoint" in name:
+            endpoints_sg = sg
+            break
+    
     endpoints_sg_id = (endpoints_sg or {}).get("id") or ""
 
     # VPC endpoints by service suffix
