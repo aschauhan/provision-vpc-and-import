@@ -114,16 +114,25 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
                     sg_keys.append(m.group(1))
         return sg_keys
 
-    def parse_extra_routes(tier: str) -> List[str]:
-        # Parse <tier>_extra_routes list to get destination CIDRs
+    def parse_extra_routes(tier: str) -> List[Dict[str, str]]:
+        # Parse <tier>_extra_routes list to get full route objects
         # public_extra_routes = [
-        #   { destination_cidr_block = "1.2.3.0/24" ... },
+        #   {
+        #     destination_cidr_block = "1.2.3.0/24"
+        #     target_type            = "transit_gateway_id"
+        #     target_id              = "tgw-xxx"
+        #   },
         # ]
         list_name = f"{tier}_extra_routes"
         start_re = re.compile(rf"^\s*{re.escape(list_name)}\s*=\s*\[\s*$")
         end_re = re.compile(r"^\s*\]\s*$")
+        obj_start_re = re.compile(r'^\s*\{\s*$')
+        obj_end_re = re.compile(r'^\s*\},?\s*$')
         in_list = False
-        cidrs = []
+        in_obj = False
+        routes = []
+        current_obj = {}
+        
         for ln in lines:
             if not in_list:
                 if start_re.match(ln):
@@ -131,10 +140,29 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
                 continue
             if end_re.match(ln):
                 break
+            if not in_obj:
+                if obj_start_re.match(ln):
+                    in_obj = True
+                    current_obj = {}
+                continue
+            if obj_end_re.match(ln):
+                if current_obj:
+                    routes.append(current_obj)
+                in_obj = False
+                continue
+            
+            # Parse fields
             m = re.search(r'destination_cidr_block\s*=\s*\"([^\"]+)\"', ln)
             if m:
-                cidrs.append(m.group(1))
-        return cidrs
+                current_obj['destination_cidr_block'] = m.group(1)
+            m = re.search(r'target_type\s*=\s*\"([^\"]+)\"', ln)
+            if m:
+                current_obj['target_type'] = m.group(1)
+            m = re.search(r'target_id\s*=\s*\"([^\"]+)\"', ln)
+            if m:
+                current_obj['target_id'] = m.group(1)
+        
+        return routes
 
     return {
         "environment": parse_string("environment"),
@@ -153,9 +181,9 @@ def _parse_tfvars(tfvars_path: str) -> Dict[str, Any]:
         "nacl_private_egress_rule_numbers": parse_rule_numbers("private_egress"),
         # Extra resources
         "security_group_keys": parse_security_groups(),
-        "public_extra_route_cidrs": parse_extra_routes("public"),
-        "private_extra_route_cidrs": parse_extra_routes("private"),
-        "nonroutable_extra_route_cidrs": parse_extra_routes("nonroutable"),
+        "public_extra_routes": parse_extra_routes("public"),
+        "private_extra_routes": parse_extra_routes("private"),
+        "nonroutable_extra_routes": parse_extra_routes("nonroutable"),
     }
 
 
@@ -297,9 +325,12 @@ def _validate_import_coverage(discovery: Dict[str, Any], tfv: Dict[str, Any]) ->
             # Check if in tfvars
             found_in_tfvars = False
             for tier in ['public', 'private', 'nonroutable']:
-                tier_routes = tfv.get(f'{tier}_extra_route_cidrs', [])
-                if dest in tier_routes:
-                    found_in_tfvars = True
+                tier_routes = tfv.get(f'{tier}_extra_routes', [])
+                for route in tier_routes:
+                    if route.get('destination_cidr_block') == dest:
+                        found_in_tfvars = True
+                        break
+                if found_in_tfvars:
                     break
             if found_in_tfvars:
                 validation['will_import'] += 1
@@ -784,30 +815,50 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
             routes_by_rt_dest[f"{rt_id}_{dest}"] = route
 
     # Public extra routes
-    for dest_cidr in tfv.get("public_extra_route_cidrs", []):
-        if public_rt_id:
-            route_key = f"{public_rt_id}_{dest_cidr}"
-            addr = f'aws_route.public_extra["{dest_cidr}"]'
+    for idx, route in enumerate(tfv.get("public_extra_routes", [])):
+        dest_cidr = route.get('destination_cidr_block', '')
+        target_type = route.get('target_type', '')
+        target_id = route.get('target_id', '')
+        if public_rt_id and dest_cidr and target_type and target_id:
+            # Key format in main.tf: "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}"
+            route_key = f"{dest_cidr}-{target_type}-{target_id}-{idx}"
+            addr = f'aws_route.public_extra["{route_key}"]'
             rid = f"{public_rt_id}_{dest_cidr}"
             _emit_import(lines, tfvars_posix, addr, rid, f"public extra route {dest_cidr}")
 
     # Private extra routes
-    for dest_cidr in tfv.get("private_extra_route_cidrs", []):
+    for idx, route in enumerate(tfv.get("private_extra_routes", [])):
+        dest_cidr = route.get('destination_cidr_block', '')
+        target_type = route.get('target_type', '')
+        target_id = route.get('target_id', '')
+        if not (dest_cidr and target_type and target_id):
+            continue
+        # Key format in main.tf for private routes: "${rt_key}-${r_key}"
+        # where r_key = "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}"
+        route_key = f"{dest_cidr}-{target_type}-{target_id}-{idx}"
         for cidr in private_cidrs:
             rt_id = private_rt_by_cidr.get(cidr, "")
             if rt_id:
-                route_key = f"{rt_id}_{dest_cidr}"
-                addr = f'aws_route.private_extra["{cidr}_{dest_cidr}"]'
+                combined_key = f"{cidr}-{route_key}"
+                addr = f'aws_route.private_extra["{combined_key}"]'
                 rid = f"{rt_id}_{dest_cidr}"
                 _emit_import(lines, tfvars_posix, addr, rid, f"private extra route {cidr} -> {dest_cidr}")
 
     # Nonroutable extra routes
-    for dest_cidr in tfv.get("nonroutable_extra_route_cidrs", []):
+    for idx, route in enumerate(tfv.get("nonroutable_extra_routes", [])):
+        dest_cidr = route.get('destination_cidr_block', '')
+        target_type = route.get('target_type', '')
+        target_id = route.get('target_id', '')
+        if not (dest_cidr and target_type and target_id):
+            continue
+        # Key format in main.tf for nonroutable routes: "${rt_key}-${r_key}"
+        # where r_key = "${r.destination_cidr_block}-${r.target_type}-${r.target_id}-${idx}"
+        route_key = f"{dest_cidr}-{target_type}-{target_id}-{idx}"
         for cidr in nonroutable_cidrs:
             rt_id = nonroutable_rt_by_cidr.get(cidr, "")
             if rt_id:
-                route_key = f"{rt_id}_{dest_cidr}"
-                addr = f'aws_route.nonroutable_extra["{cidr}_{dest_cidr}"]'
+                combined_key = f"{cidr}-{route_key}"
+                addr = f'aws_route.nonroutable_extra["{combined_key}"]'
                 rid = f"{rt_id}_{dest_cidr}"
                 _emit_import(lines, tfvars_posix, addr, rid, f"nonroutable extra route {cidr} -> {dest_cidr}")
 
