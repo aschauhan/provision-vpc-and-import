@@ -380,9 +380,93 @@ def main() -> int:
             with open(output_file, 'a') as f:
                 f.write('\n}')
 
-        print(f"Discovery complete for VPC {vpc_id}, output in {import_folder}/")
+        print(f"\nDiscovery complete for VPC {vpc_id}")
+        print(f"Output: {output_file}")
+        
+        # Print resource summary
+        _print_resource_summary(resources)
 
     return 0
+
+
+def _print_resource_summary(resources: dict):
+    """Print a summary of discovered resources"""
+    print("\n" + "="*60)
+    print("DISCOVERED RESOURCES SUMMARY")
+    print("="*60)
+    
+    # VPC
+    vpc_count = 1 if resources.get('vpc') else 0
+    print(f"VPC: {vpc_count}")
+    
+    # Subnets
+    subnets = resources.get('subnets', [])
+    public_subnets = [s for s in subnets if s.get('tier') == 'public']
+    private_subnets = [s for s in subnets if s.get('tier') == 'private']
+    nonroutable_subnets = [s for s in subnets if s.get('tier') == 'nonroutable']
+    print(f"Subnets: {len(subnets)} (Public: {len(public_subnets)}, Private: {len(private_subnets)}, Nonroutable: {len(nonroutable_subnets)})")
+    
+    # CIDR associations
+    cidr_assocs = resources.get('cidr_block_associations', [])
+    additional_cidrs = [c for c in cidr_assocs if not c.get('primary')]
+    print(f"Additional CIDR Blocks: {len(additional_cidrs)}")
+    
+    # NACLs
+    nacls = resources.get('network_acls', [])
+    custom_nacls = [n for n in nacls if not n.get('is_default')]
+    print(f"Network ACLs: {len(custom_nacls)}")
+    
+    # Route Tables
+    route_tables = resources.get('route_tables', [])
+    main_rt = [rt for rt in route_tables if any(a.get('main') for a in rt.get('associations', []))]
+    custom_rts = [rt for rt in route_tables if not any(a.get('main') for a in rt.get('associations', []))]
+    print(f"Route Tables: {len(custom_rts)}")
+    
+    # Routes
+    routes = resources.get('routes', [])
+    local_routes = [r for r in routes if r.get('GatewayId', '').startswith('local')]
+    default_routes = [r for r in routes if r.get('DestinationCidrBlock') == '0.0.0.0/0']
+    extra_routes = [r for r in routes if r.get('DestinationCidrBlock') != '0.0.0.0/0' and not r.get('GatewayId', '').startswith('local')]
+    print(f"Routes: {len(routes)} (Default: {len(default_routes)}, Extra: {len(extra_routes)})")
+    
+    # NAT Gateways
+    nat_gws = resources.get('nat_gateways', [])
+    public_nats = [n for n in nat_gws if n.get('connectivity_type') == 'public']
+    private_nats = [n for n in nat_gws if n.get('connectivity_type') == 'private']
+    print(f"NAT Gateways: {len(nat_gws)} (Public: {len(public_nats)}, Private: {len(private_nats)})")
+    
+    # EIPs
+    eips = resources.get('eips', [])
+    print(f"Elastic IPs: {len(eips)}")
+    
+    # Internet Gateway
+    igw = resources.get('internet_gateway')
+    print(f"Internet Gateway: {1 if igw else 0}")
+    
+    # VPC Endpoints
+    endpoints = resources.get('vpc_endpoints', [])
+    gateway_eps = [e for e in endpoints if e.get('type') == 'Gateway']
+    interface_eps = [e for e in endpoints if e.get('type') == 'Interface']
+    print(f"VPC Endpoints: {len(endpoints)} (Gateway: {len(gateway_eps)}, Interface: {len(interface_eps)})")
+    
+    # Security Groups
+    sgs = resources.get('security_groups', [])
+    custom_sgs = [s for s in sgs if not s.get('is_default')]
+    print(f"Security Groups: {len(custom_sgs)}")
+    
+    # DHCP Options
+    dhcp = resources.get('dhcp_options')
+    print(f"DHCP Options: {1 if dhcp else 0}")
+    
+    print("="*60)
+    
+    total = (vpc_count + len(additional_cidrs) + len(subnets) + len(custom_nacls) + 
+             len(custom_rts) + len(subnets) + len(default_routes) + len(extra_routes) + 
+             len(nat_gws) + len(eips) + (1 if igw else 0) + len(endpoints) + 
+             len(custom_sgs) + (1 if dhcp else 0) + (1 if dhcp else 0))
+    
+    print(f"ESTIMATED TERRAFORM RESOURCES TO IMPORT: ~{total}")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
