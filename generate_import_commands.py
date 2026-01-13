@@ -828,8 +828,14 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
         "DHCP association",
     )
 
-    # Security group for endpoints
-    _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg[0].aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
+    # Security group for endpoints - only import if module will be created
+    # Module count condition: enable_interface_endpoints && enable_vpc_endpoints_sg && length(vpc_endpoints_security_group_ids) == 0
+    enable_interface_endpoints = tfv.get("enable_interface_endpoints", False)
+    enable_vpc_endpoints_sg = tfv.get("enable_vpc_endpoints_sg", False)
+    vpc_endpoints_sg_ids = tfv.get("vpc_endpoints_security_group_ids", [])
+    
+    if enable_interface_endpoints and enable_vpc_endpoints_sg and len(vpc_endpoints_sg_ids) == 0 and endpoints_sg_id:
+        _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg[0].aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
 
     # Extra security groups from tfvars
     sg_keys = tfv.get("security_group_keys", [])
