@@ -837,17 +837,18 @@ def generate(import_dir: str, tfvars_path: str, discovery_json_path: str, out_pa
     if enable_interface_endpoints and enable_vpc_endpoints_sg and len(vpc_endpoints_sg_ids) == 0 and endpoints_sg_id:
         _emit_import(lines, tfvars_posix, "module.vpc_endpoints_sg[0].aws_security_group.this", endpoints_sg_id, "VPC endpoints security group")
 
-    # Extra security groups from tfvars
-    sg_keys = tfv.get("security_group_keys", [])
+    # Extra security groups from tfvars (map of name -> sg definition)
+    extra_sgs = tfv.get("extra_security_groups", {})
     sgs_by_name = {sg.get("group_name"): sg for sg in data.get("security_groups", []) if sg.get("group_name")}
     
-    for sg_key in sg_keys:
-        # Try to find matching SG in discovered data
-        sg = sgs_by_name.get(sg_key)
+    for sg_key, sg_config in extra_sgs.items():
+        # Match by the name in the tfvars configuration
+        sg_name = sg_config.get("name", "")
+        sg = sgs_by_name.get(sg_name)
         if sg:
             sg_id = sg.get("id", "")
             addr = f'module.extra_security_groups["{sg_key}"].aws_security_group.this'
-            _emit_import(lines, tfvars_posix, addr, sg_id, f"security group {sg_key}")
+            _emit_import(lines, tfvars_posix, addr, sg_id, f"security group {sg_name}")
 
     # VPC endpoints
     _emit_import(lines, tfvars_posix, "module.s3_vpc_endpoint[0].aws_vpc_endpoint.this", vpce_by_suffix.get("s3") or "", "S3 VPC endpoint")
