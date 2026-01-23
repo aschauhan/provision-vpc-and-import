@@ -1,0 +1,1574 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >- 
+  This template deploys an egress VPC with three public and three private subnets distributed across three Availability Zones. 
+  It provisions a public NAT Gateway along with public and private route tables configured with the required routes, a DHCP options set, and 
+  a private Network ACL (NACL) with the necessary rules
+
+Parameters:
+  Environment:
+    Description: Environment shall be "prd" or "npe"
+    Type: String
+    Default: npe   ## use for non-production environment  
+    # Default: prd   ## use for production environment
+  Application:
+    Description: Application ou id
+    Type: String
+    Default: ntw   ## Use the application ou id
+  EnvType:
+    Description: 'Environment Type shall be Production::PRD or Non-production::Dev'
+    Type: String
+    Default: Non-production::Dev  ## use for non-production environment 
+    # Default: Production::PRD  ## use for production environment     
+  CreatedBy:
+    Description: VPC Created By
+    Type: String
+    Default: Cloud Network Team   ### Use appropriate team name 
+    ConstraintDescription: Please Enter executor of this script
+  CreationDate:
+    Description: date of creation
+    Type: String
+    Default: '2025-05-16 12:30:00'   ## Insert the date of creation
+    AllowedPattern: ^\d{4}(-\d{2}){2} (\d{2}:){2}\d{2}$
+    ConstraintDescription: Date and time of creation
+  Vpctype:
+    Description: Type of VPC such as Egress or DNS
+    Type: String
+    Default: egress 
+  # Az1ZoneId:
+  #   Description: Availability Zone ID for Az1
+  #   Type: String
+  #   Default: usw2-az1  ### Use for us-west-2 region
+  #   # Default: use1-az1  ### Use for us-east-1 region
+  # Az2ZoneId:
+  #   Description: Availability Zone ID for Az2
+  #   Type: String
+  #   Default: usw2-az2  ### Use for us-west-2 region
+  #   # Default: use1-az2  ### Use for us-east-1 region
+  # Az3ZoneId:
+  #   Description: Availability Zone ID for Az3
+  #   Type: String
+  #   Default: usw2-az3  ### Use for us-west-2 region
+  #   # Default: use1-az3  ### Use for us-east-1 region
+
+  VpcCIDR1:
+    Description: Please enter the routable IP range (CIDR notation) for this VPC
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.10.10.0/25   ## use the routable CIDR provide by network team
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: Must be a valid IP CIDR rang of the form x.x.x.x/16.
+  VpcCIDR2:
+    Description: Please enter the Non Routable IP range (CIDR notation) for this VPC
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 100.10.10.10/25   ## use the NR CIDR provide by network team
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: Must be a valid IP CIDR rang of the form x.x.x.x/16.
+
+  Domainname:
+    Description: CORP Domain Name
+    Type: String
+    Default: 'corporate.t-mobile.com'   ## CORPORATE Domain
+    # Default: 'mgmt'   ## NMNet Domain
+  Domainnameservers:
+    Description: 'DNS NLB IP addresses, This should be based on the Environmet and Region '
+    Type: String
+    Default: 10.65.225.253, 10.65.224.204, 10.65.227.23  ## for NPE, West region
+    # Default: 10.65.225.254, 10.65.227.40, 10.65.224.214  ## for PRD, West region
+    # Default: 10.75.229.171, 10.75.226.122, 10.75.226.174  ## for NPE, East region
+    # Default: 10.75.229.152, 10.75.226.150, 10.75.226.77  ## for PRD, East region
+    # Default: 10.251.21.200, 10.252.21.200, AmazonProvidedDNS  ## NMNet 
+  Ntpservers:
+    Description: NTP servers
+    Type: String
+    Default: 10.92.192.132, 10.92.192.133, 10.92.183.4  ## use with CORPORATE Domain
+  Netbiosnodetype:
+    Description: node type
+    Type: String
+    Default: '2'   ## use with CORPORATE Domain
+  Netbiosnameservers:
+    Description: netbios name servers
+    Type: String
+    Default: 10.65.230.11, 10.65.230.21, 10.65.230.41   ## use with CORPORATE Domain in west
+    # Default: 10.75.230.11, 10.75.230.21, 10.75.230.41   ## use with CORPORATE Domain in east
+  Onpremnw:
+    Description: on-prem network CIDR
+    Type: String
+    Default: 10.0.0.0/8
+  cmdbid:
+    Description: cmdbid of application
+    Type: String
+    Default: 'APP0021401'  ### NTW Cmdb_id
+
+#### Resource Creation Starts here ################
+Resources:
+#### Create VPC ################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR1
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - !Ref AWS::Region
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  VpcCidrBlock2:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref VpcCIDR2
+
+
+#### Create Internet Gateway ################
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - igw
+              - !Ref AWS::Region
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+#### Create Public Subnets ################
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlock2
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az1ZoneId
+      CidrBlock: !Select [ 0, !Cidr [ !Ref VpcCIDR2, 1, 5 ]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pub-subnet
+              - !Select
+                - '0'
+                - !GetAZs ''
+              # - !Ref Az1ZoneId
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlock2
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az2ZoneId
+      CidrBlock: !Select [ 1, !Cidr [ !Ref VpcCIDR2, 2, 5 ]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pub-subnet
+              - !Select
+                - '1'
+                - !GetAZs ''
+              # - !Ref Az2ZoneId
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlock2
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '2'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az3ZoneId
+      CidrBlock: !Select [ 2, !Cidr [ !Ref VpcCIDR2, 3, 5 ]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pub-subnet
+              - !Select
+                - '2'
+                - !GetAZs ''
+              # - !Ref Az3ZoneId
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+#### Create Public Routable ################
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - vpc
+              - public
+              - rttb
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+  PublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet3
+
+#### Create Public NAT GW ################
+  NatGateway1EIP1:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP2:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP3:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP4:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP5:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP6:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP7:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway1EIP8:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP1:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP2:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP3:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP4:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP5:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP6:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP7:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway2EIP8:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway3EIP1:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP2:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP3:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP4:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP5:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP6:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP7:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+  NatGateway3EIP8:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt 
+        - NatGateway1EIP1
+        - AllocationId
+      SecondaryAllocationIds:
+        - !GetAtt 
+          - NatGateway1EIP2
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP3
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP4
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP5
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP6
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP7
+          - AllocationId
+        - !GetAtt 
+          - NatGateway1EIP8
+          - AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - natgw
+              - !Select
+                - '0'
+                - !GetAZs ''
+              # - !Ref Az1ZoneId              
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt 
+        - NatGateway2EIP1
+        - AllocationId
+      SecondaryAllocationIds:
+        - !GetAtt 
+          - NatGateway2EIP2
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP3
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP4
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP5
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP6
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP7
+          - AllocationId
+        - !GetAtt 
+          - NatGateway2EIP8
+          - AllocationId        
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - natgw
+              - !Select
+                - '1'
+                - !GetAZs ''
+              # - !Ref Az2ZoneId    
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  NatGateway3:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt 
+        - NatGateway3EIP1
+        - AllocationId
+      SecondaryAllocationIds:
+        - !GetAtt 
+          - NatGateway3EIP2
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP3
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP4
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP5
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP6
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP7
+          - AllocationId
+        - !GetAtt 
+          - NatGateway3EIP8
+          - AllocationId
+      SubnetId: !Ref PublicSubnet3
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - natgw
+              - !Select
+                - '2'
+                - !GetAZs ''
+              # - !Ref Az3ZoneId                  
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+#### Create Private Subnets ################
+  PvtSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az1ZoneId      
+      CidrBlock: !Select [ 0, !Cidr [ !GetAtt VPC.CidrBlock, 1, 4 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt-subnet
+              - !Select
+                - '0'
+                - !GetAZs ''
+              # - !Ref Az1ZoneId                  
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  PvtSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az2ZoneId
+      CidrBlock: !Select [ 1, !Cidr [ !GetAtt VPC.CidrBlock, 2, 4 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt-subnet
+              - !Select
+                - '1'
+                - !GetAZs ''
+              # - !Ref Az2ZoneId  
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  PvtSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - '2'
+        - !GetAZs ''
+      # AvailabilityZoneId: !Ref Az3ZoneId
+      CidrBlock: !Select [ 2, !Cidr [ !GetAtt VPC.CidrBlock, 3, 4 ]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt-subnet
+              - !Select
+                - '2'
+                - !GetAZs ''
+              # - !Ref Az3ZoneId 
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+#### Create Private Subnet Routables ################
+  PvtRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt
+              - rttb
+              - !Select
+                - '0'
+                - !GetAZs ''
+              # - !Ref Az1ZoneId  
+  InternetRoute3:
+    Type: AWS::EC2::Route
+    DependsOn: NatGateway1
+    Properties:
+      RouteTableId: !Ref PvtRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PvtSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PvtRouteTable1
+      SubnetId: !Ref PvtSubnet1
+
+  PvtRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt
+              - rttb
+              - !Select
+                - '1'
+                - !GetAZs ''
+              # - !Ref Az2ZoneId  
+  InternetRoute4:
+    Type: AWS::EC2::Route
+    DependsOn: NatGateway2
+    Properties:
+      RouteTableId: !Ref PvtRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2  
+    
+  PvtSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PvtRouteTable2
+      SubnetId: !Ref PvtSubnet2
+
+  PvtRouteTable3:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - pvt
+              - rttb
+              - !Select
+                - '2'
+                - !GetAZs ''
+              # - !Ref Az3ZoneId 
+
+  InternetRoute5:
+    Type: AWS::EC2::Route
+    DependsOn: NatGateway3
+    Properties:
+      RouteTableId: !Ref PvtRouteTable3
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway3  
+    
+  PvtSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PvtRouteTable3
+      SubnetId: !Ref PvtSubnet3
+
+
+#### Create DHCP Option Set ################
+  Dhcpoptionset:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Ref Domainname
+      DomainNameServers:
+        - !Ref Domainnameservers
+      NetbiosNameServers:
+        - !Ref Netbiosnameservers
+      NetbiosNodeType: !Ref Netbiosnodetype
+      NtpServers:
+        - !Ref Ntpservers
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - dhcp
+              - !Ref AWS::Region
+              - v2
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+  DHCPOptionsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      DhcpOptionsId: !Ref Dhcpoptionset
+      VpcId: !Ref VPC
+
+  NoIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: no-ingress-sg
+      GroupDescription: Security group with no ingress rule
+      VpcId: !Ref VPC
+
+#### Create Public Network Access list ################
+  PublicNACL:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - !Ref AWS::Region
+              - public
+              - nacl
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  IpubNACLEntry100:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      # CidrBlock: !Ref VpcCIDR1
+      CidrBlock: !GetAtt VPC.CidrBlock
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      Protocol: -1
+      RuleAction: Allow
+      RuleNumber: 100
+  IpubNACLEntry105:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: !Ref VpcCIDR2
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      Protocol: -1
+      RuleAction: Allow
+      RuleNumber: 105
+
+  IpubNACLEntry110:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: Allow
+      RuleNumber: 110
+  IpubNACLEntry120:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: Allow
+      RuleNumber: 120
+  IpubNACLEntry130:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: Allow
+      RuleNumber: 130
+  IpubNACLEntry140:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId: !Ref PublicNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: Allow
+      RuleNumber: 140
+  EgressPublicNACL:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId: !Ref PublicNACL
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: '100'
+
+#### Create Private Network Access list ################
+  PrivateNACL:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - '-'
+            - - !Ref Application
+              - !Ref Environment
+              - !Ref Vpctype
+              - vpc
+              - !Ref AWS::Region
+              - private
+              - nacl
+        - Key: Create By
+          Value: !Ref CreatedBy
+        - Key: Creation Date
+          Value: !Ref CreationDate
+        - Key: Environment
+          Value: !Ref EnvType
+        - Key: Application
+          Value: !Ref Application
+        - Key: cmdb_id
+          Value: !Ref cmdbid
+
+  IpriNACLEntry100:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      # CidrBlock: !Ref VpcCIDR1
+      CidrBlock: !GetAtt VPC.CidrBlock
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 100
+  IpriNACLEntry105:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: !Ref VpcCIDR2
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 105
+
+  IpriNACLEntry110:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 110
+  IpriNACLEntry120:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 120
+  IpriNACLEntry130:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 130
+  IpriNACLEntry135:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 135
+  IpriNACLEntry140:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 140
+  IpriNACLEntry145:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Icmp:
+        Code: -1
+        Type: -1
+      Protocol: 1
+      RuleAction: ALLOW
+      RuleNumber: 145
+  IpriNACLEntry200:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.156.0.0/18
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 200
+  IpriNACLEntry210:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.12.160.0/19
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 210
+  IpriNACLEntry220:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.12.224.0/19
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 220
+  IpriNACLEntry230:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.148.192.0/18
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 230
+  IpriNACLEntry240:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 240
+  IpriNACLEntry250:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.65.224.0/20
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 250
+  IpriNACLEntry260:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.75.224.0/20
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 260
+  IpriNACLEntry270:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.65.240.0/21
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 270
+
+  IpriNACLEntry281:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.77.120.128/25
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 281
+  IpriNACLEntry282:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.77.251.128/25
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 282
+
+  IpriNACLEntry300:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.92.76.252/32
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 300
+  IpriNACLEntry310:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 310
+  IpriNACLEntry320:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.240.0.0/12
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 320
+  IpriNACLEntry330:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 330
+  IpriNACLEntry340:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 340
+  IpriNACLEntry400:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: DENY
+      RuleNumber: 400
+  IpriNACLEntry500:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 500
+  EpriNACLEntry100:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      # CidrBlock: !Ref VpcCIDR1
+      CidrBlock: !GetAtt VPC.CidrBlock
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 100
+  EpriNACLEntry105:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: !Ref VpcCIDR2
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 105
+  EpriNACLEntry110:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 110
+  EpriNACLEntry120:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 120
+  EpriNACLEntry130:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 130
+  EpriNACLEntry135:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 135
+  EpriNACLEntry145:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Icmp:
+        Code: -1
+        Type: -1
+      Protocol: 1
+      RuleAction: ALLOW
+      RuleNumber: 145
+  EpriNACLEntry156:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 25
+        To: 25
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 156
+  EpriNACLEntry157:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 465
+        To: 587
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 157
+  EpriNACLEntry270:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.65.224.0/20
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 270
+  EpriNACLEntry280:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.75.224.0/20
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 280
+
+  EpriNACLEntry281:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.77.120.128/25
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 281
+  EpriNACLEntry282:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.77.251.128/25
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 282
+
+  EpriNACLEntry290:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.65.240.0/21
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 290
+  EpriNACLEntry300:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.92.76.252/32
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 88
+        To: 636
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 300
+  EpriNACLEntry310:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 88
+        To: 636
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 310
+  EpriNACLEntry320:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.240.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 88
+        To: 636
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 320
+  EpriNACLEntry330:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 6
+      RuleAction: ALLOW
+      RuleNumber: 330
+  EpriNACLEntry340:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 53
+        To: 53
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 340
+  EpriNACLEntry350:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.148.0.0/17
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 123
+        To: 123
+      Protocol: 17
+      RuleAction: Allow
+      RuleNumber: 350
+  EpriNACLEntry360:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.240.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 389
+        To: 389
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 360
+  EpriNACLEntry370:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.144.0.0/12
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      PortRange:
+        From: 389
+        To: 389
+      Protocol: 17
+      RuleAction: ALLOW
+      RuleNumber: 370
+  EpriNACLEntry400:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: DENY
+      RuleNumber: 400
+  EpriNACLEntry500:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId: !Ref PrivateNACL
+      Protocol: -1
+      RuleAction: ALLOW
+      RuleNumber: 500
+
+  Publicsubnet1AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PublicNACL
+      SubnetId: !Ref PublicSubnet1
+  Publicsubnet2AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PublicNACL
+      SubnetId: !Ref PublicSubnet2
+  Publicsubnet3AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PublicNACL
+      SubnetId: !Ref PublicSubnet3
+
+  PrivateNatsubnet1AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PrivateNACL
+      SubnetId: !Ref PvtSubnet1     
+  PrivateNatsubnet2AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PrivateNACL
+      SubnetId: !Ref PvtSubnet2
+  PrivateNatsubnet3AclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: 
+      NetworkAclId: !Ref PrivateNACL
+      SubnetId: !Ref PvtSubnet3
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+  StacksRegion:
+    Description: Region VPC is in
+    Value: !Ref AWS::Region
+  VPCsACL:
+    Description: VPC's Network ACL ID
+    Value: !GetAtt VPC.DefaultNetworkAcl
+  VPCsSecurityGroup:
+    Description: VPC Default Security Group ID
+    Value: !GetAtt VPC.DefaultSecurityGroup
+  PublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnet1
+  PublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2
+  PublicSubnet3:
+    Description: A reference to the public subnet in the 3rd Availability Zone
+    Value: !Ref PublicSubnet3
+  PrivateNatSubnet1:
+    Description: A reference to the private NAT subnet in the 1st Availability Zone
+    Value: !Ref PvtSubnet1
+  PrivateNatSubnet2:
+    Description: A reference to the private NAT subnet in the 2nd Availability Zone
+    Value: !Ref PvtSubnet2
+  PrivateNatSubnet3:
+    Description: A reference to the private NAT subnet in the 3rd Availability Zone
+    Value: !Ref PvtSubnet3
+
+  PublicRouteTable:
+    Description: A reference to the Public Route table 
+    Value: !Ref PublicRouteTable
+  PvtRouteTable1:
+    Description: A reference to the Private NAT Route table for 1st Availability Zone
+    Value: !Ref PvtRouteTable1
+
+  PvtRouteTable2:
+    Description: A reference to the Private NAT Route table for 2nd Availability Zone
+    Value: !Ref PvtRouteTable2
+  PvtRouteTable3:
+    Description: A reference to the Private NAT Route table for 3rd Availability Zone
+    Value: !Ref PvtRouteTable3
+
+  NoIngressSecurityGroup:
+    Description: Security group with no ingress rule
+    Value: !Ref NoIngressSecurityGroup
